@@ -1,0 +1,883 @@
+---
+title: "Análisis factorial DBCA - Unidad II"
+author: "Jhinmy"
+format:
+  html:
+    toc: true
+    toc-expand: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    self-contained: true
+    code-fold: true
+    code-tools: true
+execute:
+  warning: false
+  message: false
+  echo: true
+editor_options:
+  chunk_output_type: console
+---
+
+# Objetivo del análisis
+
+Este documento organiza y analiza una base experimental de sanidad vegetal correspondiente al efecto del té de compost y del control químico sobre el mildiu polvoso (*Oidium* sp.) en dos variedades de rosa.
+
+El análisis se trabaja como un **Diseño de Bloques Completos al Azar con arreglo factorial 2 × 3**:
+
+- **Factor A:** variedad de rosa.
+- **Factor B:** método de control.
+- **Bloque:** repetición experimental.
+- **Modelo estadístico:** `respuesta ~ bloque + variedad * metodo_control`.
+
+El operador `*` en R representa el análisis factorial completo, es decir:
+
+```{r}
+#| label: equivalencia-factorial
+#| eval: false
+variedad * metodo_control
+# Equivale a:
+variedad + metodo_control + variedad:metodo_control
+```
+
+# Preparación del entorno
+
+En esta sección se cargan los paquetes necesarios, se crean carpetas de salida y se define una ruta segura para guardar tablas, figuras y modelos. 
+
+```{r}
+#| label: setup-paquetes-rutas
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+options(scipen = 999)
+
+paquetes_necesarios <- c(
+  "tidyverse",
+  "googlesheets4",
+  "janitor",
+  "emmeans",
+  "multcomp",
+  "multcompView",
+  "broom",
+  "car",
+  "knitr"
+)
+
+paquetes_faltantes <- paquetes_necesarios[
+  !vapply(paquetes_necesarios, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(paquetes_faltantes) > 0) {
+  install.packages(paquetes_faltantes)
+}
+
+invisible(lapply(paquetes_necesarios, library, character.only = TRUE))
+
+# Ruta principal de salida.
+# Prioridad: disco D. Si no existe, usa la carpeta del proyecto.
+ruta_base <- if (dir.exists("D:/")) {
+  "D:/sanidad_vegetal_factorial"
+} else {
+  file.path(getwd(), "sanidad_vegetal_factorial")
+}
+
+rutas <- list(
+  figuras = file.path(ruta_base, "figuras_ppt"),
+  tablas  = file.path(ruta_base, "tablas"),
+  datos   = file.path(ruta_base, "datos_limpios"),
+  modelos = file.path(ruta_base, "modelos")
+)
+
+purrr::walk(rutas, dir.create, recursive = TRUE, showWarnings = FALSE)
+
+rutas_df <- tibble(
+  elemento = names(rutas),
+  ruta = unlist(rutas)
+)
+
+knitr::kable(rutas_df, caption = "Carpetas de salida creadas para el análisis")
+```
+
+# Importación de datos
+
+Aquí se importa la hoja correcta del archivo de Google Sheets. La base experimental está en la hoja **`fb`**. No se debe usar `sheet = 1`, porque esa hoja corresponde a `info` y no contiene las variables experimentales.
+
+```{r}
+#| label: importacion-datos
+
+googlesheets4::gs4_deauth()
+
+url <- "https://docs.google.com/spreadsheets/d/13nLAswQNNr42L0SfMbq_9cLwyXLRG_bGa9a4Hrdy5fo/edit?gid=1817587507#gid=1817587507"
+
+ss <- googlesheets4::as_sheets_id(url)
+
+hojas_disponibles <- googlesheets4::sheet_names(ss)
+
+knitr::kable(
+  tibble(hojas = hojas_disponibles),
+  caption = "Hojas disponibles en el Google Sheets"
+)
+
+datos_raw <- googlesheets4::read_sheet(ss, sheet = "fb") %>% 
+  janitor::clean_names() %>% 
+  filter(!if_all(everything(), is.na))
+
+glimpse(datos_raw)
+```
+
+# Organización de la base experimental
+
+En esta sección se definen correctamente los factores experimentales y se crean variables derivadas útiles para la interpretación agronómica. La variable `trat` se conserva para identificación, pero **no se usa como factor principal del modelo factorial**, porque el tratamiento ya representa la combinación entre variedad y método de control.
+
+```{r}
+#| label: organizacion-base
+
+datos <- datos_raw %>% 
+  mutate(
+    bloque = factor(bloque, levels = c("RI", "RII", "RIII", "RIV")),
+    bloque_n = factor(bloque_n, levels = c(1, 2, 3, 4)),
+    trat = factor(trat, levels = c("T1", "T2", "T3", "T4", "T5", "T6")),
+    cod_variedad = factor(cod_variedad, levels = c("V1", "V2")),
+    variedad = factor(variedad, levels = c("Explorer", "Mondial")),
+    cod_metodo = factor(cod_metodo, levels = c("M1", "M2", "M3")),
+    metodo_control = factor(
+      metodo_control,
+      levels = c(
+        "Té de compost 10 mL/L",
+        "Té de compost 20 mL/L",
+        "Control químico"
+      )
+    ),
+    tipo_ctrl = factor(tipo_ctrl, levels = c("Biológico", "Convencional")),
+    metodo_corto = case_when(
+      metodo_control == "Té de compost 10 mL/L" ~ "Compost 10 mL/L",
+      metodo_control == "Té de compost 20 mL/L" ~ "Compost 20 mL/L",
+      metodo_control == "Control químico" ~ "Control químico",
+      TRUE ~ as.character(metodo_control)
+    ),
+    metodo_corto = factor(
+      metodo_corto,
+      levels = c("Compost 10 mL/L", "Compost 20 mL/L", "Control químico")
+    ),
+    sev_reduccion_abs_pct = sev_a1_pct - sev_a4_pct,
+    sev_reduccion_rel_pct = ((sev_a1_pct - sev_a4_pct) / sev_a1_pct) * 100,
+    flor_exportable_pct = 100 - flor_no_exp_oidio_pct
+  )
+
+readr::write_csv(datos, file.path(rutas$datos, "base_limpia_factorial.csv"))
+
+glimpse(datos)
+```
+
+# Verificación del diseño experimental
+
+Antes del análisis estadístico se verifica que el diseño esté balanceado. Para un factorial 2 × 3 en DBCA con cuatro bloques, se esperan 24 unidades experimentales.
+
+```{r}
+#| label: verificacion-diseno
+
+n_unidades <- nrow(datos)
+
+tabla_bloques <- datos %>% 
+  count(bloque, name = "n_unidades")
+
+tabla_bloque_trat <- datos %>% 
+  count(bloque, trat, name = "n")
+
+tabla_factorial <- datos %>% 
+  count(variedad, metodo_control, name = "n_repeticiones")
+
+tabla_cruzada_factorial <- as.data.frame.matrix(
+  xtabs(~ variedad + metodo_control, data = datos)
+)
+
+tabla_cruzada_bloque_trat <- as.data.frame.matrix(
+  xtabs(~ bloque + trat, data = datos)
+)
+
+readr::write_csv(tabla_bloques, file.path(rutas$tablas, "verificacion_bloques.csv"))
+readr::write_csv(tabla_bloque_trat, file.path(rutas$tablas, "verificacion_bloque_tratamiento.csv"))
+readr::write_csv(tabla_factorial, file.path(rutas$tablas, "verificacion_factorial.csv"))
+
+knitr::kable(tabla_bloques, caption = "Número de unidades experimentales por bloque")
+knitr::kable(tabla_factorial, caption = "Repeticiones por combinación factorial")
+knitr::kable(tabla_cruzada_factorial, caption = "Tabla cruzada variedad × método de control")
+knitr::kable(tabla_cruzada_bloque_trat, caption = "Tabla cruzada bloque × tratamiento")
+
+if (n_unidades != 24) {
+  stop("El número de unidades experimentales no es 24. Revisar la base.")
+}
+
+if (any(tabla_bloques$n_unidades != 6)) {
+  stop("Cada bloque debe tener 6 tratamientos. Revisar la base.")
+}
+
+if (any(tabla_factorial$n_repeticiones != 4)) {
+  stop("Cada combinación variedad × método debe tener 4 repeticiones. Revisar la base.")
+}
+
+if (any(tabla_bloque_trat$n != 1)) {
+  stop("Cada tratamiento debe aparecer una sola vez por bloque. Revisar la base.")
+}
+```
+
+# Grados de libertad esperados
+
+Esta verificación evita uno de los errores más comunes: tratar el experimento como un ANOVA simple por tratamientos cuando realmente corresponde a un factorial en DBCA.
+
+```{r}
+#| label: grados-libertad-esperados
+
+n_bloques <- nlevels(datos$bloque)
+n_variedades <- nlevels(datos$variedad)
+n_metodos <- nlevels(datos$metodo_control)
+n_total <- nrow(datos)
+
+gl_dbca <- tibble(
+  fuente = c(
+    "Bloque",
+    "Variedad",
+    "Método de control",
+    "Variedad × Método de control",
+    "Error",
+    "Total"
+  ),
+  gl = c(
+    n_bloques - 1,
+    n_variedades - 1,
+    n_metodos - 1,
+    (n_variedades - 1) * (n_metodos - 1),
+    (n_total - 1) - ((n_bloques - 1) + (n_variedades - 1) + (n_metodos - 1) + ((n_variedades - 1) * (n_metodos - 1))),
+    n_total - 1
+  )
+)
+
+readr::write_csv(gl_dbca, file.path(rutas$tablas, "grados_libertad_dbca_factorial.csv"))
+
+knitr::kable(gl_dbca, caption = "Grados de libertad esperados para el DBCA factorial 2 × 3")
+```
+
+# Verificación de cálculos internos
+
+Se verifica que las variables de severidad correspondan al cálculo de hojas afectadas equivalentes respecto al total de hojas evaluadas. También se verifica que el porcentaje de flor no exportable por *Oidium* corresponda al cociente entre tallos no exportables y producción de tallos.
+
+```{r}
+#| label: verificacion-calculos
+
+verificacion_calculos <- datos %>% 
+  transmute(
+    id_unidad,
+    sev_a1_calc = round((hojas_afec_eq_a1 / nhojas) * 100, 1),
+    sev_a2_calc = round((hojas_afec_eq_a2 / nhojas) * 100, 1),
+    sev_a3_calc = round((hojas_afec_eq_a3 / nhojas) * 100, 1),
+    sev_a4_calc = round((hojas_afec_eq_a4 / nhojas) * 100, 1),
+    flor_no_exp_calc = round((tallos_no_exp_oidio / produccion_tallos) * 100, 1),
+    error_sev_a1 = sev_a1_pct - sev_a1_calc,
+    error_sev_a2 = sev_a2_pct - sev_a2_calc,
+    error_sev_a3 = sev_a3_pct - sev_a3_calc,
+    error_sev_a4 = sev_a4_pct - sev_a4_calc,
+    error_flor_no_exp = flor_no_exp_oidio_pct - flor_no_exp_calc
+  )
+
+resumen_errores <- verificacion_calculos %>% 
+  summarise(
+    max_error_sev_a1 = max(abs(error_sev_a1), na.rm = TRUE),
+    max_error_sev_a2 = max(abs(error_sev_a2), na.rm = TRUE),
+    max_error_sev_a3 = max(abs(error_sev_a3), na.rm = TRUE),
+    max_error_sev_a4 = max(abs(error_sev_a4), na.rm = TRUE),
+    max_error_flor_no_exp = max(abs(error_flor_no_exp), na.rm = TRUE)
+  )
+
+readr::write_csv(verificacion_calculos, file.path(rutas$tablas, "verificacion_calculos_detalle.csv"))
+readr::write_csv(resumen_errores, file.path(rutas$tablas, "verificacion_calculos_resumen.csv"))
+
+knitr::kable(resumen_errores, caption = "Resumen de errores máximos de cálculo")
+
+if (any(abs(verificacion_calculos %>% dplyr::select(tidyselect::starts_with("error_")) %>% unlist()) > 0.15, na.rm = TRUE)) {
+  warning("Existen diferencias mayores a 0.15 puntos porcentuales. Revisar redondeos o datos originales.")
+}
+```
+
+# Variables seleccionadas para el análisis
+
+Se seleccionan tres variables porque permiten interpretar la enfermedad, la mejora alcanzada y la consecuencia productiva/comercial:
+
+1. `sev_a4_pct`: severidad final después de la cuarta aplicación.
+2. `sev_reduccion_rel_pct`: reducción relativa de severidad entre la primera y cuarta aplicación.
+3. `flor_no_exp_oidio_pct`: porcentaje de flor no exportable por *Oidium* sp.
+
+```{r}
+#| label: resumen-descriptivo
+
+variables_analisis <- c(
+  "sev_a4_pct",
+  "sev_reduccion_rel_pct",
+  "flor_no_exp_oidio_pct"
+)
+
+etiquetas_variables <- tibble(
+  variable = variables_analisis,
+  etiqueta = c(
+    "Severidad final (%)",
+    "Reducción relativa de severidad (%)",
+    "Flor no exportable por Oidium (%)"
+  )
+)
+
+resumen_descriptivo <- datos %>% 
+  pivot_longer(
+    cols = all_of(variables_analisis),
+    names_to = "variable",
+    values_to = "valor"
+  ) %>% 
+  left_join(etiquetas_variables, by = "variable") %>% 
+  group_by(variable, etiqueta, variedad, metodo_control) %>% 
+  summarise(
+    n = n(),
+    media = mean(valor, na.rm = TRUE),
+    desviacion = sd(valor, na.rm = TRUE),
+    error_estandar = desviacion / sqrt(n),
+    minimo = min(valor, na.rm = TRUE),
+    maximo = max(valor, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+readr::write_csv(resumen_descriptivo, file.path(rutas$tablas, "resumen_descriptivo_variables.csv"))
+
+knitr::kable(
+  resumen_descriptivo,
+  digits = 3,
+  caption = "Resumen descriptivo de las variables seleccionadas"
+)
+```
+
+# Función general para ANOVA factorial en DBCA
+
+Esta función automatiza el análisis para cada variable respuesta. El modelo usado es siempre:
+
+```{r}
+#| label: modelo-base-texto
+#| eval: false
+respuesta ~ bloque + variedad * metodo_control
+```
+
+Este modelo incluye:
+
+- efecto de bloque;
+- efecto principal de variedad;
+- efecto principal de método de control;
+- interacción variedad × método de control.
+
+```{r}
+#| label: funcion-analisis-dbca-factorial
+
+analisis_dbca_factorial <- function(data, respuesta, etiqueta_y, nombre_salida) {
+  
+  formula_modelo <- as.formula(
+    paste(respuesta, "~ bloque + variedad * metodo_control")
+  )
+  
+  modelo <- aov(formula_modelo, data = data)
+  
+  anova_tbl <- broom::tidy(modelo) %>% 
+    mutate(
+      variable = respuesta,
+      .before = 1
+    )
+  
+  p_interaccion <- anova_tbl %>% 
+    filter(term == "variedad:metodo_control") %>% 
+    pull(p.value)
+  
+  decision_interaccion <- ifelse(
+    length(p_interaccion) == 1 && !is.na(p_interaccion) && p_interaccion < 0.05,
+    "Interacción significativa: interpretar variedad × método de control.",
+    "Interacción no significativa: interpretar efectos principales, especialmente método de control."
+  )
+  
+  shapiro_tbl <- tibble(
+    variable = respuesta,
+    prueba = "Shapiro-Wilk",
+    estadistico = unname(shapiro.test(residuals(modelo))$statistic),
+    p_valor = shapiro.test(residuals(modelo))$p.value
+  )
+  
+  levene_out <- car::leveneTest(
+    as.formula(paste(respuesta, "~ interaction(variedad, metodo_control)")),
+    data = data
+  )
+  
+  levene_tbl <- as.data.frame(levene_out) %>% 
+    tibble::rownames_to_column("fuente") %>% 
+    mutate(variable = respuesta, .before = 1)
+  
+  medias_interaccion <- emmeans::emmeans(
+    modelo,
+    ~ variedad:metodo_control
+  ) %>% 
+    multcomp::cld(Letters = letters, adjust = "tukey") %>% 
+    as.data.frame() %>% 
+    mutate(
+      variable = respuesta,
+      .group = stringr::str_squish(.group),
+      .before = 1
+    )
+  
+  medias_metodo <- emmeans::emmeans(
+    modelo,
+    ~ metodo_control
+  ) %>% 
+    multcomp::cld(Letters = letters, adjust = "tukey") %>% 
+    as.data.frame() %>% 
+    mutate(
+      variable = respuesta,
+      .group = stringr::str_squish(.group),
+      .before = 1
+    )
+  
+  medias_variedad <- emmeans::emmeans(
+    modelo,
+    ~ variedad
+  ) %>% 
+    multcomp::cld(Letters = letters, adjust = "tukey") %>% 
+    as.data.frame() %>% 
+    mutate(
+      variable = respuesta,
+      .group = stringr::str_squish(.group),
+      .before = 1
+    )
+  
+  readr::write_csv(anova_tbl, file.path(rutas$tablas, paste0(nombre_salida, "_anova.csv")))
+  readr::write_csv(shapiro_tbl, file.path(rutas$tablas, paste0(nombre_salida, "_shapiro.csv")))
+  readr::write_csv(levene_tbl, file.path(rutas$tablas, paste0(nombre_salida, "_levene.csv")))
+  readr::write_csv(medias_interaccion, file.path(rutas$tablas, paste0(nombre_salida, "_medias_interaccion.csv")))
+  readr::write_csv(medias_metodo, file.path(rutas$tablas, paste0(nombre_salida, "_medias_metodo.csv")))
+  readr::write_csv(medias_variedad, file.path(rutas$tablas, paste0(nombre_salida, "_medias_variedad.csv")))
+  saveRDS(modelo, file.path(rutas$modelos, paste0(nombre_salida, "_modelo_aov.rds")))
+  
+  diag_df <- tibble(
+    ajustados = fitted(modelo),
+    residuos = residuals(modelo)
+  )
+  
+  graf_residuos <- ggplot(diag_df, aes(x = ajustados, y = residuos)) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(
+      title = paste("Residuos vs ajustados -", etiqueta_y),
+      x = "Valores ajustados",
+      y = "Residuos"
+    ) +
+    theme_minimal(base_size = 12)
+  
+  graf_qq <- ggplot(diag_df, aes(sample = residuos)) +
+    stat_qq(size = 2) +
+    stat_qq_line() +
+    labs(
+      title = paste("QQ plot de residuos -", etiqueta_y),
+      x = "Cuantiles teóricos",
+      y = "Cuantiles muestrales"
+    ) +
+    theme_minimal(base_size = 12)
+  
+  graf_metodo <- ggplot(medias_metodo, aes(x = metodo_control, y = emmean)) +
+    geom_col(width = 0.65) +
+    geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.15) +
+    geom_text(aes(label = .group, y = upper.CL + max(upper.CL, na.rm = TRUE) * 0.04), size = 4) +
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 16)) +
+    labs(
+      title = paste("Medias ajustadas por método -", etiqueta_y),
+      x = "Método de control",
+      y = etiqueta_y
+    ) +
+    theme_minimal(base_size = 12)
+  
+  graf_interaccion <- ggplot(
+    medias_interaccion,
+    aes(x = metodo_control, y = emmean, group = variedad, linetype = variedad, shape = variedad)
+  ) +
+    geom_line(linewidth = 0.8, position = position_dodge(width = 0.15)) +
+    geom_point(size = 2.5, position = position_dodge(width = 0.15)) +
+    geom_errorbar(
+      aes(ymin = lower.CL, ymax = upper.CL),
+      width = 0.12,
+      position = position_dodge(width = 0.15)
+    ) +
+    geom_text(
+      aes(label = .group, y = upper.CL + max(upper.CL, na.rm = TRUE) * 0.04),
+      size = 3.5,
+      position = position_dodge(width = 0.15)
+    ) +
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 16)) +
+    labs(
+      title = paste("Interacción variedad × método -", etiqueta_y),
+      x = "Método de control",
+      y = etiqueta_y,
+      linetype = "Variedad",
+      shape = "Variedad"
+    ) +
+    theme_minimal(base_size = 12)
+  
+  ggsave(
+    filename = file.path(rutas$figuras, paste0(nombre_salida, "_medias_metodo.png")),
+    plot = graf_metodo,
+    width = 9,
+    height = 5.5,
+    dpi = 300,
+    bg = "white"
+  )
+  
+  ggsave(
+    filename = file.path(rutas$figuras, paste0(nombre_salida, "_interaccion.png")),
+    plot = graf_interaccion,
+    width = 9,
+    height = 5.5,
+    dpi = 300,
+    bg = "white"
+  )
+  
+  ggsave(
+    filename = file.path(rutas$figuras, paste0(nombre_salida, "_residuos.png")),
+    plot = graf_residuos,
+    width = 8,
+    height = 5,
+    dpi = 300,
+    bg = "white"
+  )
+  
+  ggsave(
+    filename = file.path(rutas$figuras, paste0(nombre_salida, "_qqplot.png")),
+    plot = graf_qq,
+    width = 8,
+    height = 5,
+    dpi = 300,
+    bg = "white"
+  )
+  
+  list(
+    respuesta = respuesta,
+    etiqueta_y = etiqueta_y,
+    modelo = modelo,
+    anova = anova_tbl,
+    p_interaccion = p_interaccion,
+    decision_interaccion = decision_interaccion,
+    shapiro = shapiro_tbl,
+    levene = levene_tbl,
+    medias_interaccion = medias_interaccion,
+    medias_metodo = medias_metodo,
+    medias_variedad = medias_variedad,
+    graf_metodo = graf_metodo,
+    graf_interaccion = graf_interaccion,
+    graf_residuos = graf_residuos,
+    graf_qq = graf_qq
+  )
+}
+```
+
+# Análisis 1: Severidad final
+
+La severidad final permite evaluar el estado de la enfermedad después de la cuarta aplicación. En sanidad vegetal, esta variable es clave porque resume el control alcanzado al final del periodo de evaluación.
+
+```{r}
+#| label: analisis-severidad-final
+
+res_sev_final <- analisis_dbca_factorial(
+  data = datos,
+  respuesta = "sev_a4_pct",
+  etiqueta_y = "Severidad final (%)",
+  nombre_salida = "01_severidad_final"
+)
+
+knitr::kable(res_sev_final$anova, digits = 5, caption = "ANOVA factorial DBCA para severidad final")
+res_sev_final$decision_interaccion
+knitr::kable(res_sev_final$medias_metodo, digits = 3, caption = "Tukey por método de control - severidad final")
+knitr::kable(res_sev_final$medias_interaccion, digits = 3, caption = "Tukey por interacción variedad × método - severidad final")
+
+res_sev_final$graf_metodo
+res_sev_final$graf_interaccion
+```
+
+# Análisis 2: Reducción relativa de severidad
+
+Esta variable expresa la mejora relativa lograda desde la primera hasta la cuarta aplicación. Es útil para una presentación porque permite comunicar el efecto de los tratamientos como porcentaje de reducción de la enfermedad respecto al punto inicial.
+
+```{r}
+#| label: analisis-reduccion-severidad
+
+res_reduccion <- analisis_dbca_factorial(
+  data = datos,
+  respuesta = "sev_reduccion_rel_pct",
+  etiqueta_y = "Reducción relativa de severidad (%)",
+  nombre_salida = "02_reduccion_relativa_severidad"
+)
+
+knitr::kable(res_reduccion$anova, digits = 5, caption = "ANOVA factorial DBCA para reducción relativa de severidad")
+res_reduccion$decision_interaccion
+knitr::kable(res_reduccion$medias_metodo, digits = 3, caption = "Tukey por método de control - reducción relativa")
+knitr::kable(res_reduccion$medias_interaccion, digits = 3, caption = "Tukey por interacción variedad × método - reducción relativa")
+
+res_reduccion$graf_metodo
+res_reduccion$graf_interaccion
+```
+
+# Análisis 3: Flor no exportable por *Oidium* sp.
+
+Esta variable conecta el manejo fitosanitario con la pérdida comercial. Por ello, es una de las más importantes para discutir la utilidad práctica de los métodos de control.
+
+```{r}
+#| label: analisis-flor-no-exportable
+
+res_flor_no_exp <- analisis_dbca_factorial(
+  data = datos,
+  respuesta = "flor_no_exp_oidio_pct",
+  etiqueta_y = "Flor no exportable por Oidium (%)",
+  nombre_salida = "03_flor_no_exportable_oidium"
+)
+
+knitr::kable(res_flor_no_exp$anova, digits = 5, caption = "ANOVA factorial DBCA para flor no exportable por Oidium")
+res_flor_no_exp$decision_interaccion
+knitr::kable(res_flor_no_exp$medias_metodo, digits = 3, caption = "Tukey por método de control - flor no exportable")
+knitr::kable(res_flor_no_exp$medias_interaccion, digits = 3, caption = "Tukey por interacción variedad × método - flor no exportable")
+
+res_flor_no_exp$graf_metodo
+res_flor_no_exp$graf_interaccion
+```
+
+# Evolución temporal de la severidad
+
+Además de los tres análisis principales, se genera una figura de evolución temporal para mostrar cómo cambió la severidad desde la primera hasta la cuarta aplicación.
+
+```{r}
+#| label: evolucion-severidad
+
+sev_long <- datos %>% 
+  dplyr::select(id_unidad, bloque, trat, variedad, metodo_control, sev_a1_pct, sev_a2_pct, sev_a3_pct, sev_a4_pct) %>% 
+  pivot_longer(
+    cols = tidyselect::starts_with("sev_a"),
+    names_to = "aplicacion",
+    values_to = "severidad_pct"
+  ) %>% 
+  mutate(
+    aplicacion = readr::parse_number(aplicacion),
+    aplicacion = factor(aplicacion, levels = c(1, 2, 3, 4))
+  )
+
+graf_evolucion_metodo <- ggplot(
+  sev_long,
+  aes(x = aplicacion, y = severidad_pct, group = metodo_control, linetype = metodo_control, shape = metodo_control)
+) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.9) +
+  stat_summary(fun = mean, geom = "point", size = 2.5) +
+  labs(
+    title = "Evolución de la severidad por método de control",
+    x = "Aplicación",
+    y = "Severidad promedio (%)",
+    linetype = "Método de control",
+    shape = "Método de control"
+  ) +
+  theme_minimal(base_size = 12)
+
+graf_evolucion_variedad_metodo <- ggplot(
+  sev_long,
+  aes(x = aplicacion, y = severidad_pct, group = metodo_control, linetype = metodo_control, shape = metodo_control)
+) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.9) +
+  stat_summary(fun = mean, geom = "point", size = 2.5) +
+  facet_wrap(~ variedad) +
+  labs(
+    title = "Evolución de la severidad por variedad y método de control",
+    x = "Aplicación",
+    y = "Severidad promedio (%)",
+    linetype = "Método de control",
+    shape = "Método de control"
+  ) +
+  theme_minimal(base_size = 12)
+
+ggsave(
+  filename = file.path(rutas$figuras, "04_evolucion_severidad_metodo.png"),
+  plot = graf_evolucion_metodo,
+  width = 9,
+  height = 5.5,
+  dpi = 300,
+  bg = "white"
+)
+
+ggsave(
+  filename = file.path(rutas$figuras, "05_evolucion_severidad_variedad_metodo.png"),
+  plot = graf_evolucion_variedad_metodo,
+  width = 10,
+  height = 6,
+  dpi = 300,
+  bg = "white"
+)
+
+graf_evolucion_metodo
+graf_evolucion_variedad_metodo
+```
+
+# Diagnóstico de supuestos
+
+Se revisan dos aspectos mínimos: normalidad de residuos y homogeneidad de varianzas. El diagnóstico no reemplaza el criterio agronómico, pero permite evaluar si el ANOVA es razonable para las variables seleccionadas.
+
+```{r}
+#| label: diagnostico-supuestos-resumen
+
+resumen_shapiro <- bind_rows(
+  res_sev_final$shapiro,
+  res_reduccion$shapiro,
+  res_flor_no_exp$shapiro
+)
+
+resumen_levene <- bind_rows(
+  res_sev_final$levene,
+  res_reduccion$levene,
+  res_flor_no_exp$levene
+)
+
+readr::write_csv(resumen_shapiro, file.path(rutas$tablas, "resumen_shapiro.csv"))
+readr::write_csv(resumen_levene, file.path(rutas$tablas, "resumen_levene.csv"))
+
+knitr::kable(resumen_shapiro, digits = 5, caption = "Resumen de normalidad de residuos")
+knitr::kable(resumen_levene, digits = 5, caption = "Resumen de homogeneidad de varianzas")
+```
+
+# Resumen integrado para presentación
+
+Esta tabla resume la decisión estadística principal para cada variable. Se usa para construir las diapositivas de resultados.
+
+```{r}
+#| label: resumen-integrado-resultados
+
+resumen_anova <- bind_rows(
+  res_sev_final$anova,
+  res_reduccion$anova,
+  res_flor_no_exp$anova
+) %>% 
+  left_join(etiquetas_variables, by = "variable") %>% 
+  dplyr::select(etiqueta, term, df, statistic, p.value) %>% 
+  mutate(
+    significancia = case_when(
+      is.na(p.value) ~ "",
+      p.value < 0.001 ~ "***",
+      p.value < 0.01 ~ "**",
+      p.value < 0.05 ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+resumen_decisiones <- tibble(
+  variable = c(
+    "Severidad final (%)",
+    "Reducción relativa de severidad (%)",
+    "Flor no exportable por Oidium (%)"
+  ),
+  p_interaccion = c(
+    res_sev_final$p_interaccion,
+    res_reduccion$p_interaccion,
+    res_flor_no_exp$p_interaccion
+  ),
+  decision = c(
+    res_sev_final$decision_interaccion,
+    res_reduccion$decision_interaccion,
+    res_flor_no_exp$decision_interaccion
+  )
+)
+
+readr::write_csv(resumen_anova, file.path(rutas$tablas, "resumen_anova_integrado.csv"))
+readr::write_csv(resumen_decisiones, file.path(rutas$tablas, "resumen_decisiones_interaccion.csv"))
+
+knitr::kable(resumen_anova, digits = 5, caption = "Resumen integrado de ANOVA factorial DBCA")
+knitr::kable(resumen_decisiones, digits = 5, caption = "Decisión de interpretación según interacción")
+```
+
+# Verificación opcional con función específica `fat2.dbc()`
+
+Esta sección se incluye porque algunos docentes prefieren funciones agrícolas específicas para diseños factoriales. La función `fat2.dbc()` pertenece al paquete `ExpDes.pt`. Para evitar errores de renderizado, esta verificación se ejecuta **solo si el paquete está instalado**.
+
+El análisis principal ya está correctamente realizado con `aov()` mediante el modelo factorial:
+
+```{r}
+#| eval: false
+respuesta ~ bloque + variedad * metodo_control
+```
+
+```{r}
+#| label: verificacion-opcional-expdes
+
+if (!requireNamespace("ExpDes.pt", quietly = TRUE)) {
+  cat("El paquete ExpDes.pt no está instalado.\n")
+  cat("Se omite la verificación opcional con fat2.dbc().\n")
+  cat("El análisis principal queda válido porque se realizó con aov(): respuesta ~ bloque + variedad * metodo_control.\n")
+  cat("Para activar esta sección en otra ejecución, instalar una sola vez con: install.packages('ExpDes.pt')\n")
+} else {
+  library(ExpDes.pt)
+  
+  cat("\n============================================================\n")
+  cat("Verificación fat2.dbc() - Severidad final\n")
+  cat("============================================================\n")
+  with(datos, ExpDes.pt::fat2.dbc(
+    fator1 = variedad,
+    fator2 = metodo_control,
+    bloco = bloque,
+    resp = sev_a4_pct,
+    quali = c(TRUE, TRUE),
+    mcomp = "tukey",
+    fac.names = c("Variedad", "Método de control")
+  ))
+  
+  cat("\n============================================================\n")
+  cat("Verificación fat2.dbc() - Reducción relativa de severidad\n")
+  cat("============================================================\n")
+  with(datos, ExpDes.pt::fat2.dbc(
+    fator1 = variedad,
+    fator2 = metodo_control,
+    bloco = bloque,
+    resp = sev_reduccion_rel_pct,
+    quali = c(TRUE, TRUE),
+    mcomp = "tukey",
+    fac.names = c("Variedad", "Método de control")
+  ))
+  
+  cat("\n============================================================\n")
+  cat("Verificación fat2.dbc() - Flor no exportable por Oidium\n")
+  cat("============================================================\n")
+  with(datos, ExpDes.pt::fat2.dbc(
+    fator1 = variedad,
+    fator2 = metodo_control,
+    bloco = bloque,
+    resp = flor_no_exp_oidio_pct,
+    quali = c(TRUE, TRUE),
+    mcomp = "tukey",
+    fac.names = c("Variedad", "Método de control")
+  ))
+}
+```
+
+# Archivos generados
+
+Al finalizar el renderizado, los archivos para la presentación quedan guardados en las carpetas definidas al inicio.
+
+```{r}
+#| label: listar-archivos-generados
+
+archivos_generados <- tibble(
+  archivo = list.files(ruta_base, recursive = TRUE, full.names = TRUE)
+)
+
+knitr::kable(archivos_generados, caption = "Archivos generados por el análisis")
+```
+
+# Conclusión técnica del procedimiento
+
+El procedimiento aplicado corresponde a un ANOVA factorial en DBCA. No se usa `trat` como único factor porque eso transformaría el análisis en una comparación simple de seis tratamientos y perdería la partición factorial entre variedad, método de control e interacción. El modelo correcto es:
+
+```{r}
+#| eval: false
+respuesta ~ bloque + variedad * metodo_control
+```
+
+Con este modelo se obtiene la estructura estadística requerida para evaluar:
+
+- si existen diferencias entre variedades;
+- si existen diferencias entre métodos de control;
+- si la respuesta al método de control depende de la variedad;
+- si los bloques explican variación experimental no atribuible a los tratamientos.
