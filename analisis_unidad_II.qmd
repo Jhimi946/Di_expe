@@ -1,6 +1,6 @@
 ---
-title: "Análisis factorial DBCA - Unidad II"
-author: "Jhinmy"
+title: "Análisis factorial del efecto del té de compost sobre Oidium sp. en rosas"
+author: "Jhinmy Yhanner Hidrogo Paredes"
 format:
   html:
     toc: true
@@ -8,14 +8,14 @@ format:
     toc-depth: 4
     toc-location: left
     number-sections: true
-    self-contained: true
     code-fold: true
-    code-tools: true
+    embed-resources: true
+    output-file: index.html
 execute:
   warning: false
   message: false
   echo: true
-editor_options:
+editor_options: 
   chunk_output_type: console
 ---
 
@@ -99,7 +99,7 @@ knitr::kable(rutas_df, caption = "Carpetas de salida creadas para el análisis")
 
 # Importación de datos
 
-Aquí se importa la hoja correcta del archivo de Google Sheets. La base experimental está en la hoja **`fb`**. No se debe usar `sheet = 1`, porque esa hoja corresponde a `info` y no contiene las variables experimentales.
+Aquí se importa la hoja correcta del archivo de Google Sheets. La base experimental está en la hoja **`fb`**. 
 
 ```{r}
 #| label: importacion-datos
