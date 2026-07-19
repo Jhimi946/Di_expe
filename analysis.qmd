@@ -1,0 +1,128 @@
+---
+title: ""
+author: ""
+format:
+  html:
+    toc: true
+    toc-expand: true
+    toc-depth: 4
+    toc-location: left
+    number-sections: true
+    self-contained: true
+    code-fold: true
+editor_options: 
+  chunk_output_type: console
+execute: 
+  warning: false
+  message: false
+  echo: true
+---
+
+# Project Setup
+
+```{r}
+#| label: setup
+
+source('https://inkaverse.com/setup.r')
+```
+
+# Data import
+
+```{r}
+gs <- "url" %>% 
+  as_sheets_id()
+
+fb <- gs %>% 
+  range_read(ss = .,sheet = "fb")
+```
+
+# Research Objectives
+
+> https://docs.google.com/spreadsheets/d/1u6xgTT8jDFkHSMkK1iRrNVR-1iOINQidbEiaDCu2Nqw/edit?gid=504037395#gid=504037395
+
+## RO 1
+
+```{r}
+
+```
+
+## RO 2
+
+```{r}
+
+```
+
+# Multivariate
+
+```{r}
+#| eval: false
+
+library(FactoMineR)
+library(factoextra)
+
+dtx <- fb %>% 
+  dplyr::select(!c("var1", "var2")) 
+# str(dtx)
+  
+mv <- PCA(X = dtx, scale.unit = T, graph = F, quali.sup = C(1, 2))
+
+var <- mv %>% 
+  plot.PCA(choix = c("var"), cex=0.7)
+
+cos <- mv %>% 
+  fviz_pca_var(col.var = "cos2"
+               , gradient.cols = inti:::paleta()
+               , repel = TRUE
+               , labelsize = 2)
+
+ind <- mv %>% 
+  plot.PCA(choix = c("ind")
+           , cex = 0.7
+           , label = "ind"
+           , invisible = "quali"
+           , habillage="none"
+           , col.hab = inti:::paleta()
+           )
+
+pcainfo <- factoextra::get_pca(mv); pcainfo
+
+pcainfo$cor %>% kable(caption = "Variable correlations")
+pcainfo$contrib %>% kable(caption = "Variable Contribution")
+pcainfo$cos2 %>% kable(caption = "Variable Cos2")
+
+cls <- HCPC(mv, graph = F
+            , nb.clust = -1
+            , metric = "euclidean"
+            , method = "ward"
+            )
+
+map <- \() {plot.HCPC(cls, choice = "map", draw.tree = FALSE)}
+
+cls$data.clust # Cluster membership of each individual
+cls$desc.var$quanti # Quantitative variables characterizing each cluster
+cls$desc.var$category # Categorical variables significantly by cluster 
+table(cls$data.clust$clust) # Number of individuals assigned to each cluster
+
+plot <- list(var, cos, ind, map) %>% 
+  plot_grid(plotlist = ., ncol = 2, labels = "auto") %>% 
+  ggsave(plot = ., "manuscript/multivariate.jpg", units = "cm"
+                , width = 30, height = 30)
+
+plot %>% include_graphics()
+```
+
+# References
+
+Broman, K. W., & Woo, K. H. (2017). Data organization in spreadsheets. The American Statistician, 72(1), 2–10. https://doi.org/10.1080/00031305.2017.1375989
+
+Zuur, A. F., Ieno, E. N., & Elphick, C. S. (2009). A protocol for data exploration to avoid common statistical problems. Methods in Ecology and Evolution, 1(1), 3–14. https://doi.org/10.1111/j.2041-210x.2009.00001.x
+
+Francoishusson. (2017, July 13). PCA course using FactoMineR | R-bloggers. R-bloggers. https://www.r-bloggers.com/2017/07/pca-course-using-factominer/
+
+Kozak, M., & Piepho, H. (2017). What’s normal anyway? Residual plots are more telling than significance tests when checking ANOVA assumptions. Journal of Agronomy and Crop Science, 204(1), 86–98. https://doi.org/10.1111/jac.12220
+
+Tanaka, E., & Hui, F. K. C. (2019). Symbolic formulae for linear mixed models. In Communications in computer and information science (pp. 3–21). https://doi.org/10.1007/978-981-15-1960-4_1
+
+Schielzeth, H., Dingemanse, N. J., Nakagawa, S., Westneat, D. F., Allegue, H., Teplitsky, C., Réale, D., Dochtermann, N. A., Garamszegi, L. Z., & Araya‐Ajoy, Y. G. (2020). Robustness of linear mixed‐effects models to violations of distributional assumptions. Methods in Ecology and Evolution, 11(9), 1141–1152. https://doi.org/10.1111/2041-210x.13434
+
+Jambor, H. K. (2025). A checklist for designing and improving the visualization of scientific data. Nature Cell Biology, 27(6), 879–883. https://doi.org/10.1038/s41556-025-01684-z

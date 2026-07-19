@@ -1,0 +1,1224 @@
+---
+title: "Análisis factorial de variables morfológicas del tomate"
+subtitle: "Evaluación a los 45 días después del tratamiento"
+author: "Jhinmy"
+lang: es
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    code-fold: false
+    df-print: paged
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Objetivo y diseño experimental
+
+Se evalúan tres variables morfológicas de tomate mediante un **diseño completamente al azar (DCA)** con arreglo factorial de dos factores:
+
+- Factor A: seis accesiones de tomate.
+- Factor B: cuatro dosis de salinidad.
+- Seis repeticiones por combinación.
+- Total esperado: 144 unidades experimentales.
+
+El modelo factorial general es:
+
+\[
+Y_{ijk}=\mu+A_i+D_j+(AD)_{ij}+\varepsilon_{ijk}
+\]
+
+La secuencia aplicada es:
+
+1. Importación y validación de datos.
+2. Análisis exploratorio y descriptivo.
+3. Selección del modelo según la naturaleza de la variable.
+4. Evaluación de supuestos o diagnóstico de ajuste.
+5. Prueba global de accesión, dosis e interacción.
+6. Comparaciones posteriores solo cuando el modelo global las justifique.
+7. Presentación de medias, incertidumbre y conclusiones.
+
+La independencia de las observaciones no se demuestra mediante una prueba estadística; depende de que la asignación de tratamientos haya sido realmente aleatoria y de que cada unidad experimental sea independiente.
+
+# Preparación del análisis
+
+## Paquetes
+
+```{r}
+#| label: paquetes
+
+paquetes <- c(
+  "googlesheets4",
+  "janitor",
+  "dplyr",
+  "tidyr",
+  "ggplot2",
+  "car",
+  "MASS",
+  "sandwich",
+  "emmeans",
+  "multcomp",
+  "multcompView",
+  "knitr"
+)
+
+faltantes <- paquetes[
+  !vapply(paquetes, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(faltantes) > 0) {
+  install.packages(
+    faltantes,
+    repos = "https://cloud.r-project.org",
+    dependencies = TRUE
+  )
+}
+
+invisible(lapply(paquetes, library, character.only = TRUE))
+
+options(
+  dplyr.summarise.inform = FALSE,
+  scipen = 999,
+  contrasts = c("contr.sum", "contr.poly")
+)
+
+alpha <- 0.05
+```
+
+## Carpeta de resultados
+
+La carpeta se crea dentro del directorio de trabajo para evitar depender de una unidad `D:` específica.
+
+```{r}
+#| label: carpeta-resultados
+
+carpeta_resultados <- file.path(getwd(), "resultados_tomate_45_dias")
+dir.create(carpeta_resultados, recursive = TRUE, showWarnings = FALSE)
+carpeta_resultados
+```
+
+# Importación y validación de datos
+
+## Lectura desde Google Sheets
+
+```{r}
+#| label: importar-datos
+
+url <- paste0(
+  "https://docs.google.com/spreadsheets/d/",
+  "1MwtqKNO-JCU5U5RwCRK8wcQwjjC9dIGv8QICpoYhdRw/",
+  "edit?gid=54569621#gid=54569621"
+)
+
+# La hoja debe ser pública o accesible mediante el usuario autenticado.
+googlesheets4::gs4_deauth()
+
+fb <- googlesheets4::read_sheet(
+  ss = url,
+  sheet = "fb"
+) |>
+  janitor::clean_names()
+
+dim(fb)
+names(fb)
+```
+
+## Comprobación de columnas
+
+```{r}
+#| label: validar-columnas
+
+columnas_requeridas <- c(
+  "dosis_salinidad",
+  "accesiones_tomate",
+  "rep",
+  "atp_45",
+  "ndh_45",
+  "ndb_45"
+)
+
+columnas_faltantes <- setdiff(columnas_requeridas, names(fb))
+
+if (length(columnas_faltantes) > 0) {
+  stop(
+    paste(
+      "Faltan las siguientes columnas:",
+      paste(columnas_faltantes, collapse = ", ")
+    )
+  )
+}
+```
+
+## Normalización de factores
+
+```{r}
+#| label: preparar-factores
+
+normalizar_accesion <- function(x) {
+  x <- trimws(as.character(x))
+
+  mapa <- c(
+    "Roj_lima" = "Rojo Lima",
+    "Rojo Lima" = "Rojo Lima",
+    "Ama_lima" = "Amarillo Lima",
+    "Amarillo Lima" = "Amarillo Lima",
+    "Bagua" = "Bagua",
+    "Camporedondo" = "Camporedondo",
+    "San_ignasio" = "San Ignacio",
+    "San Ignacio" = "San Ignacio",
+    "Rio_grande" = "Río Grande",
+    "Río Grande" = "Río Grande"
+  )
+
+  unname(mapa[x])
+}
+
+normalizar_dosis <- function(x) {
+  x <- trimws(as.character(x))
+
+  mapa <- c(
+    "0.mM" = "0 mM",
+    "0 mM" = "0 mM",
+    "50.mM" = "50 mM",
+    "50 mM" = "50 mM",
+    "150.mM" = "150 mM",
+    "150 mM" = "150 mM",
+    "300.mM" = "300 mM",
+    "300 mM" = "300 mM"
+  )
+
+  unname(mapa[x])
+}
+
+niveles_accesion <- c(
+  "Rojo Lima",
+  "Amarillo Lima",
+  "Bagua",
+  "Camporedondo",
+  "San Ignacio",
+  "Río Grande"
+)
+
+niveles_dosis <- c("0 mM", "50 mM", "150 mM", "300 mM")
+
+fb <- fb |>
+  dplyr::mutate(
+    accesiones_tomate = factor(
+      normalizar_accesion(accesiones_tomate),
+      levels = niveles_accesion
+    ),
+    dosis_salinidad = factor(
+      normalizar_dosis(dosis_salinidad),
+      levels = niveles_dosis
+    ),
+    rep = factor(rep),
+    dplyr::across(
+      dplyr::all_of(c("atp_45", "ndh_45", "ndb_45")),
+      as.numeric
+    ),
+    tratamiento = interaction(
+      accesiones_tomate,
+      dosis_salinidad,
+      sep = " | ",
+      drop = TRUE
+    )
+  )
+
+if (anyNA(fb$accesiones_tomate)) {
+  stop("Existen accesiones no reconocidas después de normalizar los nombres.")
+}
+
+if (anyNA(fb$dosis_salinidad)) {
+  stop("Existen dosis no reconocidas después de normalizar los nombres.")
+}
+```
+
+## Valores perdidos, duplicados y balance del diseño
+
+```{r}
+#| label: validar-datos
+
+respuestas <- c("atp_45", "ndh_45", "ndb_45")
+
+tabla_na <- data.frame(
+  variable = respuestas,
+  valores_perdidos = vapply(
+    fb[respuestas],
+    function(x) sum(is.na(x)),
+    integer(1)
+  )
+)
+
+knitr::kable(tabla_na, digits = 0)
+
+if (any(tabla_na$valores_perdidos > 0)) {
+  stop("Existen valores perdidos en las variables respuesta. Deben corregirse antes de continuar.")
+}
+
+if (any(fb$atp_45 <= 0)) {
+  stop("La altura contiene valores menores o iguales a cero; no puede aplicarse Box-Cox directamente.")
+}
+
+if (any(fb$ndh_45 < 0 | fb$ndb_45 < 0)) {
+  stop("Las variables de conteo contienen valores negativos.")
+}
+
+if (any(fb$ndh_45 %% 1 != 0 | fb$ndb_45 %% 1 != 0)) {
+  warning("Hojas o brotes contienen valores no enteros; revise si realmente son conteos.")
+}
+
+tabla_repeticiones <- with(
+  fb,
+  table(accesiones_tomate, dosis_salinidad)
+)
+
+tabla_repeticiones
+
+if (any(tabla_repeticiones != 6)) {
+  warning("El diseño no presenta exactamente seis observaciones en todas las combinaciones.")
+}
+
+if (nrow(fb) != 144) {
+  warning(paste("Se esperaban 144 observaciones, pero se encontraron", nrow(fb)))
+}
+```
+
+# Funciones auxiliares
+
+```{r}
+#| label: funciones
+
+formato_p <- function(p) {
+  ifelse(
+    is.na(p),
+    NA_character_,
+    format.pval(p, digits = 4, eps = 0.0001)
+  )
+}
+
+extraer_p_anova <- function(tabla, variable, metodo) {
+  tabla_df <- as.data.frame(tabla)
+  tabla_df$termino <- rownames(tabla_df)
+  rownames(tabla_df) <- NULL
+
+  columna_p <- grep("^Pr\\(", names(tabla_df), value = TRUE)[1]
+
+  if (is.na(columna_p)) {
+    stop("No se encontró la columna de valores p en la tabla del modelo.")
+  }
+
+  tabla_df |>
+    dplyr::transmute(
+      variable = variable,
+      metodo = metodo,
+      termino = termino,
+      p_value = .data[[columna_p]]
+    ) |>
+    dplyr::filter(termino != "(Intercept)") |>
+    dplyr::mutate(
+      fuente = dplyr::recode(
+        termino,
+        "accesiones_tomate" = "Accesión",
+        "dosis_salinidad" = "Dosis de salinidad",
+        "accesiones_tomate:dosis_salinidad" = "Accesión × dosis"
+      ),
+      decision = dplyr::if_else(
+        p_value < alpha,
+        "Significativo",
+        "No significativo"
+      ),
+      p_mostrar = formato_p(p_value)
+    ) |>
+    dplyr::select(variable, metodo, fuente, p_value, p_mostrar, decision)
+}
+
+obtener_p <- function(tabla_p, fuente) {
+  valor <- tabla_p$p_value[tabla_p$fuente == fuente]
+  if (length(valor) == 0) NA_real_ else valor[1]
+}
+
+diagnosticar_lm <- function(modelo, datos, respuesta) {
+  prueba_shapiro <- stats::shapiro.test(stats::residuals(modelo))
+
+  formula_levene <- stats::reformulate(
+    termlabels = "tratamiento",
+    response = respuesta
+  )
+
+  prueba_levene <- car::leveneTest(
+    formula_levene,
+    data = datos,
+    center = median
+  )
+
+  p_levene <- as.data.frame(prueba_levene)[1, "Pr(>F)"]
+
+  data.frame(
+    shapiro_w = unname(prueba_shapiro$statistic),
+    shapiro_p = prueba_shapiro$p.value,
+    levene_p = p_levene,
+    normalidad = ifelse(
+      prueba_shapiro$p.value >= alpha,
+      "No se rechaza",
+      "Se rechaza"
+    ),
+    homogeneidad = ifelse(
+      p_levene >= alpha,
+      "No se rechaza",
+      "Se rechaza"
+    ),
+    cumple_ambos = prueba_shapiro$p.value >= alpha & p_levene >= alpha
+  )
+}
+
+transformar_boxcox <- function(y, lambda) {
+  if (abs(lambda) < 0.000001) {
+    log(y)
+  } else {
+    (y^lambda - 1) / lambda
+  }
+}
+
+resumen_descriptivo <- function(datos, variable) {
+  datos |>
+    dplyr::group_by(accesiones_tomate, dosis_salinidad) |>
+    dplyr::summarise(
+      n = dplyr::n(),
+      media = mean(.data[[variable]]),
+      desviacion = stats::sd(.data[[variable]]),
+      error_estandar = desviacion / sqrt(n),
+      limite_inferior_95 = media - stats::qt(0.975, df = n - 1) * error_estandar,
+      limite_superior_95 = media + stats::qt(0.975, df = n - 1) * error_estandar,
+      .groups = "drop"
+    )
+}
+
+grafico_interaccion <- function(resumen, titulo, eje_y) {
+  ggplot2::ggplot(
+    resumen,
+    ggplot2::aes(
+      x = dosis_salinidad,
+      y = media,
+      group = accesiones_tomate,
+      linetype = accesiones_tomate,
+      shape = accesiones_tomate
+    )
+  ) +
+    ggplot2::geom_line(linewidth = 0.7) +
+    ggplot2::geom_point(size = 2.7) +
+    ggplot2::geom_errorbar(
+      ggplot2::aes(
+        ymin = limite_inferior_95,
+        ymax = limite_superior_95
+      ),
+      width = 0.08,
+      linewidth = 0.5
+    ) +
+    ggplot2::labs(
+      title = titulo,
+      x = "Dosis de salinidad",
+      y = eje_y,
+      linetype = "Accesión",
+      shape = "Accesión",
+      caption = "Puntos: medias observadas. Barras: intervalos de confianza del 95 %."
+    ) +
+    ggplot2::theme_bw(base_size = 12) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5),
+      legend.position = "bottom",
+      panel.grid.minor = ggplot2::element_blank()
+    )
+}
+
+crear_emmeans <- function(modelo, especificacion, tipo = NULL, vcov_matriz = NULL) {
+  argumentos <- list(
+    object = modelo,
+    specs = especificacion
+  )
+
+  if (!is.null(tipo)) {
+    argumentos$type <- tipo
+  }
+
+  if (!is.null(vcov_matriz)) {
+    argumentos$vcov. <- vcov_matriz
+  }
+
+  do.call(emmeans::emmeans, argumentos)
+}
+
+comparaciones_factoriales <- function(
+  modelo,
+  tabla_p,
+  tipo = NULL,
+  vcov_matriz = NULL
+) {
+  p_interaccion <- obtener_p(tabla_p, "Accesión × dosis")
+  p_accesion <- obtener_p(tabla_p, "Accesión")
+  p_dosis <- obtener_p(tabla_p, "Dosis de salinidad")
+
+  salida <- list(
+    criterio = NULL,
+    dosis_dentro_accesion = NULL,
+    accesion_dentro_dosis = NULL,
+    accesion = NULL,
+    dosis = NULL
+  )
+
+  if (!is.na(p_interaccion) && p_interaccion < alpha) {
+    salida$criterio <- paste(
+      "La interacción fue significativa; se analizan efectos simples",
+      "y no se interpretan aisladamente los efectos principales."
+    )
+
+    emm_dosis <- crear_emmeans(
+      modelo,
+      ~ dosis_salinidad | accesiones_tomate,
+      tipo,
+      vcov_matriz
+    )
+
+    emm_accesion <- crear_emmeans(
+      modelo,
+      ~ accesiones_tomate | dosis_salinidad,
+      tipo,
+      vcov_matriz
+    )
+
+    salida$dosis_dentro_accesion <- list(
+      medias = as.data.frame(emm_dosis),
+      comparaciones = as.data.frame(
+        emmeans::contrast(
+          emm_dosis,
+          method = "pairwise",
+          adjust = "tukey"
+        )
+      ),
+      letras = as.data.frame(
+        multcomp::cld(
+          emm_dosis,
+          adjust = "tukey",
+          Letters = letters,
+          sort = FALSE
+        )
+      )
+    )
+
+    salida$accesion_dentro_dosis <- list(
+      medias = as.data.frame(emm_accesion),
+      comparaciones = as.data.frame(
+        emmeans::contrast(
+          emm_accesion,
+          method = "pairwise",
+          adjust = "tukey"
+        )
+      ),
+      letras = as.data.frame(
+        multcomp::cld(
+          emm_accesion,
+          adjust = "tukey",
+          Letters = letters,
+          sort = FALSE
+        )
+      )
+    )
+  } else {
+    salida$criterio <- paste(
+      "La interacción no fue significativa; se evalúan únicamente",
+      "los efectos principales que resultaron significativos."
+    )
+
+    if (!is.na(p_accesion) && p_accesion < alpha) {
+      emm_accesion <- crear_emmeans(
+        modelo,
+        ~ accesiones_tomate,
+        tipo,
+        vcov_matriz
+      )
+
+      salida$accesion <- list(
+        medias = as.data.frame(emm_accesion),
+        comparaciones = as.data.frame(
+          emmeans::contrast(
+            emm_accesion,
+            method = "pairwise",
+            adjust = "tukey"
+          )
+        ),
+        letras = as.data.frame(
+          multcomp::cld(
+            emm_accesion,
+            adjust = "tukey",
+            Letters = letters,
+            sort = FALSE
+          )
+        )
+      )
+    }
+
+    if (!is.na(p_dosis) && p_dosis < alpha) {
+      emm_dosis <- crear_emmeans(
+        modelo,
+        ~ dosis_salinidad,
+        tipo,
+        vcov_matriz
+      )
+
+      salida$dosis <- list(
+        medias = as.data.frame(emm_dosis),
+        comparaciones = as.data.frame(
+          emmeans::contrast(
+            emm_dosis,
+            method = "pairwise",
+            adjust = "tukey"
+          )
+        ),
+        letras = as.data.frame(
+          multcomp::cld(
+            emm_dosis,
+            adjust = "tukey",
+            Letters = letters,
+            sort = FALSE
+          )
+        )
+      )
+    }
+  }
+
+  salida
+}
+
+mostrar_posthoc <- function(posthoc) {
+  cat(posthoc$criterio, "\n\n")
+
+  if (!is.null(posthoc$dosis_dentro_accesion)) {
+    cat("### Dosis dentro de cada accesión\n\n")
+    print(
+      knitr::kable(
+        posthoc$dosis_dentro_accesion$comparaciones,
+        digits = 4
+      )
+    )
+
+    cat("\n\n### Grupos de Tukey: dosis dentro de cada accesión\n\n")
+    print(
+      knitr::kable(
+        posthoc$dosis_dentro_accesion$letras,
+        digits = 4
+      )
+    )
+  }
+
+  if (!is.null(posthoc$accesion_dentro_dosis)) {
+    cat("\n\n### Accesiones dentro de cada dosis\n\n")
+    print(
+      knitr::kable(
+        posthoc$accesion_dentro_dosis$comparaciones,
+        digits = 4
+      )
+    )
+
+    cat("\n\n### Grupos de Tukey: accesiones dentro de cada dosis\n\n")
+    print(
+      knitr::kable(
+        posthoc$accesion_dentro_dosis$letras,
+        digits = 4
+      )
+    )
+  }
+
+  if (!is.null(posthoc$accesion)) {
+    cat("### Comparación del efecto principal de accesión\n\n")
+    print(knitr::kable(posthoc$accesion$comparaciones, digits = 4))
+
+    cat("\n\n### Grupos de Tukey para accesión\n\n")
+    print(knitr::kable(posthoc$accesion$letras, digits = 4))
+  }
+
+  if (!is.null(posthoc$dosis)) {
+    cat("### Comparación del efecto principal de dosis\n\n")
+    print(knitr::kable(posthoc$dosis$comparaciones, digits = 4))
+
+    cat("\n\n### Grupos de Tukey para dosis\n\n")
+    print(knitr::kable(posthoc$dosis$letras, digits = 4))
+  }
+
+  if (
+    is.null(posthoc$dosis_dentro_accesion) &&
+      is.null(posthoc$accesion_dentro_dosis) &&
+      is.null(posthoc$accesion) &&
+      is.null(posthoc$dosis)
+  ) {
+    cat("Ninguna fuente de variación justificó comparaciones múltiples al 5 %.\n")
+  }
+}
+```
+
+# Análisis exploratorio conjunto
+
+```{r}
+#| label: descriptivos-generales
+
+resumen_general <- fb |>
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::all_of(respuestas),
+      list(
+        minimo = min,
+        media = mean,
+        mediana = median,
+        maximo = max,
+        desviacion = sd
+      )
+    )
+  ) |>
+  tidyr::pivot_longer(
+    cols = dplyr::everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(atp_45|ndh_45|ndb_45)_(.*)"
+  )
+
+knitr::kable(resumen_general, digits = 3)
+```
+
+# Altura de planta a los 45 días
+
+La altura es una variable continua y positiva. Primero se ajusta el ANOVA factorial en la escala original. Si no se cumplen normalidad y homogeneidad, se aplica Box–Cox. Si la transformación no resuelve ambos problemas, la inferencia se realiza con errores estándar robustos HC3 sobre el modelo transformado.
+
+## Análisis descriptivo
+
+```{r}
+#| label: resumen-atp
+
+resumen_atp <- resumen_descriptivo(fb, "atp_45")
+knitr::kable(resumen_atp, digits = 3)
+```
+
+```{r}
+#| label: grafico-atp
+#| fig-width: 10
+#| fig-height: 6
+
+figura_atp <- grafico_interaccion(
+  resumen_atp,
+  "Altura de planta a los 45 días",
+  "Altura de planta (cm)"
+)
+
+figura_atp
+
+ggplot2::ggsave(
+  filename = file.path(carpeta_resultados, "01_altura_interaccion.png"),
+  plot = figura_atp,
+  width = 10,
+  height = 6,
+  dpi = 300,
+  bg = "white"
+)
+```
+
+## Modelo original y diagnóstico
+
+```{r}
+#| label: modelo-atp-original
+
+modelo_atp_original <- stats::lm(
+  atp_45 ~ accesiones_tomate * dosis_salinidad,
+  data = fb
+)
+
+diagnostico_atp_original <- diagnosticar_lm(
+  modelo_atp_original,
+  fb,
+  "atp_45"
+)
+
+knitr::kable(diagnostico_atp_original, digits = 5)
+```
+
+```{r}
+#| label: diagnostico-grafico-atp-original
+#| fig-width: 10
+#| fig-height: 8
+
+par(mfrow = c(2, 2))
+plot(modelo_atp_original)
+par(mfrow = c(1, 1))
+```
+
+## Transformación Box–Cox
+
+```{r}
+#| label: boxcox-atp
+
+perfil_boxcox <- MASS::boxcox(
+  modelo_atp_original,
+  lambda = seq(-2, 2, by = 0.05),
+  plotit = FALSE
+)
+
+lambda_atp <- perfil_boxcox$x[which.max(perfil_boxcox$y)]
+
+fb$atp_45_boxcox <- transformar_boxcox(fb$atp_45, lambda_atp)
+
+modelo_atp_boxcox <- stats::lm(
+  atp_45_boxcox ~ accesiones_tomate * dosis_salinidad,
+  data = fb
+)
+
+diagnostico_atp_boxcox <- diagnosticar_lm(
+  modelo_atp_boxcox,
+  fb,
+  "atp_45_boxcox"
+)
+
+tabla_diagnostico_atp <- dplyr::bind_rows(
+  dplyr::mutate(
+    diagnostico_atp_original,
+    escala = "Original",
+    lambda = NA_real_
+  ),
+  dplyr::mutate(
+    diagnostico_atp_boxcox,
+    escala = "Box-Cox",
+    lambda = lambda_atp
+  )
+) |>
+  dplyr::select(
+    escala,
+    lambda,
+    shapiro_w,
+    shapiro_p,
+    levene_p,
+    normalidad,
+    homogeneidad,
+    cumple_ambos
+  )
+
+knitr::kable(tabla_diagnostico_atp, digits = 5)
+```
+
+## Selección del método inferencial
+
+```{r}
+#| label: seleccionar-modelo-atp
+
+if (diagnostico_atp_original$cumple_ambos) {
+  modelo_atp_final <- modelo_atp_original
+  metodo_atp <- "ANOVA factorial en escala original"
+  tabla_anova_atp <- car::Anova(
+    modelo_atp_final,
+    type = 3
+  )
+  vcov_atp <- NULL
+} else if (diagnostico_atp_boxcox$cumple_ambos) {
+  modelo_atp_final <- modelo_atp_boxcox
+  metodo_atp <- paste0(
+    "ANOVA factorial después de Box-Cox (lambda = ",
+    round(lambda_atp, 3),
+    ")"
+  )
+  tabla_anova_atp <- car::Anova(
+    modelo_atp_final,
+    type = 3
+  )
+  vcov_atp <- NULL
+} else {
+  modelo_atp_final <- modelo_atp_boxcox
+  metodo_atp <- paste0(
+    "ANOVA factorial robusto HC3 después de Box-Cox (lambda = ",
+    round(lambda_atp, 3),
+    ")"
+  )
+  tabla_anova_atp <- car::Anova(
+    modelo_atp_final,
+    type = 3,
+    white.adjust = "hc3"
+  )
+  vcov_atp <- sandwich::vcovHC(
+    modelo_atp_final,
+    type = "HC3"
+  )
+}
+
+cat("Método seleccionado:", metodo_atp, "\n")
+tabla_anova_atp
+
+p_atp <- extraer_p_anova(
+  tabla_anova_atp,
+  variable = "Altura de planta",
+  metodo = metodo_atp
+)
+
+knitr::kable(
+  dplyr::select(p_atp, variable, fuente, p_mostrar, decision),
+  align = "llcc"
+)
+```
+
+```{r}
+#| label: diagnostico-grafico-atp-final
+#| fig-width: 10
+#| fig-height: 8
+
+par(mfrow = c(2, 2))
+plot(modelo_atp_final)
+par(mfrow = c(1, 1))
+```
+
+## Comparaciones posteriores
+
+Las comparaciones se ejecutan según la jerarquía del modelo: primero se evalúa la interacción. Si la interacción es significativa, se comparan dosis dentro de cada accesión y accesiones dentro de cada dosis. Si no es significativa, solo se comparan los efectos principales significativos.
+
+```{r}
+#| label: posthoc-atp
+#| results: asis
+
+posthoc_atp <- comparaciones_factoriales(
+  modelo = modelo_atp_final,
+  tabla_p = p_atp,
+  tipo = NULL,
+  vcov_matriz = vcov_atp
+)
+
+mostrar_posthoc(posthoc_atp)
+```
+
+# Número de hojas a los 45 días
+
+El número de hojas es un **conteo**. No se exige normalidad de residuos como en un ANOVA gaussiano. Se ajusta primero un modelo Poisson y se calcula la dispersión de Pearson. Si la dispersión está fuera del intervalo práctico 0.75–1.50, se usa quasi-Poisson para estimar la dispersión en lugar de forzar un ANOVA normal.
+
+## Análisis descriptivo
+
+```{r}
+#| label: resumen-ndh
+
+resumen_ndh <- resumen_descriptivo(fb, "ndh_45")
+knitr::kable(resumen_ndh, digits = 3)
+```
+
+```{r}
+#| label: grafico-ndh
+#| fig-width: 10
+#| fig-height: 6
+
+figura_ndh <- grafico_interaccion(
+  resumen_ndh,
+  "Número de hojas a los 45 días",
+  "Número de hojas"
+)
+
+figura_ndh
+
+ggplot2::ggsave(
+  filename = file.path(carpeta_resultados, "02_hojas_interaccion.png"),
+  plot = figura_ndh,
+  width = 10,
+  height = 6,
+  dpi = 300,
+  bg = "white"
+)
+```
+
+## Modelo Poisson y dispersión
+
+```{r}
+#| label: modelo-ndh-poisson
+
+modelo_ndh_poisson <- stats::glm(
+  ndh_45 ~ accesiones_tomate * dosis_salinidad,
+  family = stats::poisson(link = "log"),
+  data = fb
+)
+
+dispersion_ndh <- sum(
+  stats::residuals(modelo_ndh_poisson, type = "pearson")^2
+) / stats::df.residual(modelo_ndh_poisson)
+
+if (dispersion_ndh >= 0.75 && dispersion_ndh <= 1.50) {
+  modelo_ndh_final <- modelo_ndh_poisson
+  metodo_ndh <- paste0(
+    "GLM Poisson; dispersión de Pearson = ",
+    round(dispersion_ndh, 3)
+  )
+  tabla_anova_ndh <- car::Anova(
+    modelo_ndh_final,
+    type = 3,
+    test.statistic = "LR"
+  )
+} else {
+  modelo_ndh_final <- stats::glm(
+    ndh_45 ~ accesiones_tomate * dosis_salinidad,
+    family = stats::quasipoisson(link = "log"),
+    data = fb
+  )
+  metodo_ndh <- paste0(
+    "GLM quasi-Poisson; dispersión Poisson inicial = ",
+    round(dispersion_ndh, 3)
+  )
+  tabla_anova_ndh <- car::Anova(
+    modelo_ndh_final,
+    type = 3,
+    test.statistic = "F"
+  )
+}
+
+cat("Método seleccionado:", metodo_ndh, "\n")
+tabla_anova_ndh
+
+p_ndh <- extraer_p_anova(
+  tabla_anova_ndh,
+  variable = "Número de hojas",
+  metodo = metodo_ndh
+)
+
+knitr::kable(
+  dplyr::select(p_ndh, variable, fuente, p_mostrar, decision),
+  align = "llcc"
+)
+```
+
+## Diagnóstico gráfico del GLM
+
+En un modelo de conteo no corresponde exigir normalidad mediante Shapiro–Wilk. Se revisan residuos de devianza, ajuste sistemático y observaciones influyentes.
+
+```{r}
+#| label: diagnostico-ndh
+#| fig-width: 10
+#| fig-height: 5
+
+residuos_ndh <- stats::residuals(modelo_ndh_final, type = "deviance")
+ajustados_ndh <- stats::fitted(modelo_ndh_final)
+
+par(mfrow = c(1, 2))
+plot(
+  ajustados_ndh,
+  residuos_ndh,
+  xlab = "Valores ajustados",
+  ylab = "Residuos de devianza",
+  main = "Residuos frente a ajustados"
+)
+abline(h = 0, lty = 2)
+
+qqnorm(residuos_ndh, main = "Q-Q de residuos de devianza")
+qqline(residuos_ndh, lty = 2)
+par(mfrow = c(1, 1))
+```
+
+## Comparaciones posteriores
+
+```{r}
+#| label: posthoc-ndh
+#| results: asis
+
+posthoc_ndh <- comparaciones_factoriales(
+  modelo = modelo_ndh_final,
+  tabla_p = p_ndh,
+  tipo = "response",
+  vcov_matriz = NULL
+)
+
+mostrar_posthoc(posthoc_ndh)
+```
+
+# Número de brotes a los 45 días
+
+El número de brotes también es un conteo y contiene valores bajos y ceros. Se aplica la misma secuencia Poisson/quasi-Poisson. Un coeficiente de variación tradicional no es un criterio apropiado cuando la media está cercana a cero.
+
+## Análisis descriptivo
+
+```{r}
+#| label: resumen-ndb
+
+resumen_ndb <- resumen_descriptivo(fb, "ndb_45")
+knitr::kable(resumen_ndb, digits = 3)
+```
+
+```{r}
+#| label: grafico-ndb
+#| fig-width: 10
+#| fig-height: 6
+
+figura_ndb <- grafico_interaccion(
+  resumen_ndb,
+  "Número de brotes a los 45 días",
+  "Número de brotes"
+)
+
+figura_ndb
+
+ggplot2::ggsave(
+  filename = file.path(carpeta_resultados, "03_brotes_interaccion.png"),
+  plot = figura_ndb,
+  width = 10,
+  height = 6,
+  dpi = 300,
+  bg = "white"
+)
+```
+
+## Modelo Poisson y dispersión
+
+```{r}
+#| label: modelo-ndb-poisson
+
+modelo_ndb_poisson <- stats::glm(
+  ndb_45 ~ accesiones_tomate * dosis_salinidad,
+  family = stats::poisson(link = "log"),
+  data = fb
+)
+
+dispersion_ndb <- sum(
+  stats::residuals(modelo_ndb_poisson, type = "pearson")^2
+) / stats::df.residual(modelo_ndb_poisson)
+
+if (dispersion_ndb >= 0.75 && dispersion_ndb <= 1.50) {
+  modelo_ndb_final <- modelo_ndb_poisson
+  metodo_ndb <- paste0(
+    "GLM Poisson; dispersión de Pearson = ",
+    round(dispersion_ndb, 3)
+  )
+  tabla_anova_ndb <- car::Anova(
+    modelo_ndb_final,
+    type = 3,
+    test.statistic = "LR"
+  )
+} else {
+  modelo_ndb_final <- stats::glm(
+    ndb_45 ~ accesiones_tomate * dosis_salinidad,
+    family = stats::quasipoisson(link = "log"),
+    data = fb
+  )
+  metodo_ndb <- paste0(
+    "GLM quasi-Poisson; dispersión Poisson inicial = ",
+    round(dispersion_ndb, 3)
+  )
+  tabla_anova_ndb <- car::Anova(
+    modelo_ndb_final,
+    type = 3,
+    test.statistic = "F"
+  )
+}
+
+cat("Método seleccionado:", metodo_ndb, "\n")
+tabla_anova_ndb
+
+p_ndb <- extraer_p_anova(
+  tabla_anova_ndb,
+  variable = "Número de brotes",
+  metodo = metodo_ndb
+)
+
+knitr::kable(
+  dplyr::select(p_ndb, variable, fuente, p_mostrar, decision),
+  align = "llcc"
+)
+```
+
+## Diagnóstico gráfico del GLM
+
+```{r}
+#| label: diagnostico-ndb
+#| fig-width: 10
+#| fig-height: 5
+
+residuos_ndb <- stats::residuals(modelo_ndb_final, type = "deviance")
+ajustados_ndb <- stats::fitted(modelo_ndb_final)
+
+par(mfrow = c(1, 2))
+plot(
+  ajustados_ndb,
+  residuos_ndb,
+  xlab = "Valores ajustados",
+  ylab = "Residuos de devianza",
+  main = "Residuos frente a ajustados"
+)
+abline(h = 0, lty = 2)
+
+qqnorm(residuos_ndb, main = "Q-Q de residuos de devianza")
+qqline(residuos_ndb, lty = 2)
+par(mfrow = c(1, 1))
+```
+
+## Proporción de ceros
+
+```{r}
+#| label: ceros-ndb
+
+proporcion_ceros_ndb <- mean(fb$ndb_45 == 0)
+
+data.frame(
+  observaciones = nrow(fb),
+  numero_de_ceros = sum(fb$ndb_45 == 0),
+  proporcion_de_ceros = proporcion_ceros_ndb
+) |>
+  knitr::kable(digits = 4)
+```
+
+Una proporción elevada de ceros no invalida automáticamente el modelo, pero exige revisar el gráfico de residuos. Si persiste una falta de ajuste clara, debe considerarse un modelo con inflación de ceros; no debe decidirse solo a partir del valor p.
+
+## Comparaciones posteriores
+
+```{r}
+#| label: posthoc-ndb
+#| results: asis
+
+posthoc_ndb <- comparaciones_factoriales(
+  modelo = modelo_ndb_final,
+  tabla_p = p_ndb,
+  tipo = "response",
+  vcov_matriz = NULL
+)
+
+mostrar_posthoc(posthoc_ndb)
+```
+
+# Resumen conjunto de valores p
+
+```{r}
+#| label: resumen-p
+
+resumen_p <- dplyr::bind_rows(
+  p_atp,
+  p_ndh,
+  p_ndb
+) |>
+  dplyr::select(
+    variable,
+    metodo,
+    fuente,
+    p_mostrar,
+    decision
+  )
+
+knitr::kable(
+  resumen_p,
+  align = "lllcc",
+  caption = "Pruebas globales de los modelos seleccionados"
+)
+```
+
+# Criterio de interpretación
+
+La interpretación debe seguir esta jerarquía:
+
+1. **Interacción significativa:** el efecto de la dosis depende de la accesión. Se interpretan efectos simples y sus comparaciones ajustadas.
+2. **Interacción no significativa:** se interpretan los efectos principales significativos.
+3. **Fuente no significativa:** no se ejecutan ni se interpretan comparaciones múltiples para esa fuente.
+4. Un valor p no mide la magnitud del efecto ni su importancia biológica; debe interpretarse junto con las medias, intervalos de confianza y patrón gráfico.
+5. No se eliminan observaciones únicamente para obtener normalidad o significancia.
+
+# Archivos generados
+
+```{r}
+#| label: listar-resultados
+
+list.files(
+  carpeta_resultados,
+  full.names = TRUE
+)
+```
